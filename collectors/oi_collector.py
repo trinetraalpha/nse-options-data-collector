@@ -489,6 +489,11 @@ def save_chain_snapshot(df: pd.DataFrame):
 
 def run_schedule():
     """Run every 15 min from 9:20-15:29 IST + CAS closing at 15:42."""
+    from utils.market_hours import is_market_day
+    if not is_market_day():
+        log.info("Market holiday — skipping OI collection")
+        return
+
     schedule_times = []
     h, m = 9, 20
     while h < 15 or (h == 15 and m <= 20):

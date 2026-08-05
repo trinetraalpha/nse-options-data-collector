@@ -167,6 +167,11 @@ def save_data(df: pd.DataFrame):
 
 def run_schedule():
     """Run at 8:45 AM (US+commodities+currencies) and 10:00 AM (Asian)."""
+    from utils.market_hours import is_market_day
+    if not is_market_day():
+        log.info("Market holiday — skipping pre-market collection")
+        return
+
     schedule = {"08:45": "premarket", "10:00": "asian"}
     done = set()
     log.info("Pre-market collector scheduled for: %s", list(schedule.keys()))

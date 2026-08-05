@@ -288,6 +288,11 @@ def run_all():
 
 
 def run_schedule():
+    from utils.market_hours import is_market_day
+    if not is_market_day():
+        log.info("Market holiday — skipping EOD collection")
+        return
+
     log.info("EOD Collector scheduled for 16:00 IST")
     while True:
         now = datetime.now(IST)
