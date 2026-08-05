@@ -108,6 +108,16 @@ data/
 ### Option Chain columns (per strike row)
 `timestamp, symbol, expiry, spot, strike, ce_oi, ce_volume, ce_ltp, ce_bid, ce_ask, ce_iv, ce_delta, ce_theta, ce_gamma, ce_vega, pe_oi, pe_volume, pe_ltp, pe_bid, pe_ask, pe_iv, pe_delta, pe_theta, pe_gamma, pe_vega`
 
+### Sample Data
+
+Check `examples/sample_data/` for real CSV snapshots so you can see exactly what the collectors produce before running them:
+
+| File | Description |
+|------|-------------|
+| `oi_snapshot_sample.csv` | 5-symbol OI snapshot (BANKNIFTY, RELIANCE, TCS, HDFCBANK, INFY) |
+| `option_chain_sample.csv` | NIFTY ATM ±2 strikes with full Greeks (delta, theta, gamma, vega, IV) |
+| `global_cues_sample.csv` | Pre-market (S&P, NASDAQ, crude, gold, USDINR) + Asian session (Hang Seng, Nikkei) |
+
 ## Adding Your Own Symbols
 
 Just add the stock's NSE trading symbol to the `STOCKS` list in `config.py`:
