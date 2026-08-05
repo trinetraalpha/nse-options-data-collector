@@ -3,6 +3,7 @@
 Automated data collection pipeline for NSE F&O — collects OI, full option chains (Greeks, IV, bid/ask), global cues, and EOD data for **37 symbols** (2 indices + 35 stocks). Saves to parquet files ready for ML/analysis.
 
 Built for Upstox API. Uses the analytics token (valid 1 year, no daily refresh).
+Instrument keys and lot sizes are resolved automatically from the API — just add a stock name and it works.
 
 ## What It Collects
 
@@ -106,6 +107,26 @@ data/
 
 ### Option Chain columns (per strike row)
 `timestamp, symbol, expiry, spot, strike, ce_oi, ce_volume, ce_ltp, ce_bid, ce_ask, ce_iv, ce_delta, ce_theta, ce_gamma, ce_vega, pe_oi, pe_volume, pe_ltp, pe_bid, pe_ask, pe_iv, pe_delta, pe_theta, pe_gamma, pe_vega`
+
+## Adding Your Own Symbols
+
+Just add the stock's NSE trading symbol to the `STOCKS` list in `config.py`:
+
+```python
+STOCKS = [
+    "RELIANCE", "TCS", "HDFCBANK",
+    # ... existing stocks ...
+    "BAJAJ-AUTO",   # <-- add your symbol here
+    "TATAPOWER",
+]
+```
+
+That's it. The collector automatically:
+1. **Resolves instrument keys** via Upstox Symbol Search API (`/v2/instruments/search`) — no need to look up ISINs
+2. **Fetches lot sizes** from the API (`/v2/option/contract`) — no hardcoded lot size tables
+3. **Caches keys** to `data/oi_snapshots/_instrument_keys.json` so it only searches once per symbol
+
+Also add the symbol to the `SYMBOLS` list in `collectors/eod_collector.py` if you want EOD candles for it.
 
 ## VPS Deployment (Oracle Cloud Free Tier)
 

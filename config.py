@@ -1,5 +1,8 @@
 """
 Configuration — symbols, paths, lot sizes.
+
+Add your own symbols to STOCKS list below. Lot sizes are fetched
+automatically from the Upstox API via /option/contract endpoint.
 """
 
 import os
@@ -9,24 +12,20 @@ ROOT_DIR = Path(__file__).parent
 DATA_DIR = ROOT_DIR / "data"
 LOG_DIR  = ROOT_DIR / "logs"
 
-LOT_SIZES = {
-    "NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65,
-    "RELIANCE": 250, "TCS": 175, "HDFCBANK": 550, "INFY": 300,
-    "ICICIBANK": 700, "BHARTIARTL": 475, "SBIN": 750, "ITC": 1600,
-    "LT": 150, "HINDUNILVR": 300, "KOTAKBANK": 400, "AXISBANK": 625,
-    "MARUTI": 100, "SUNPHARMA": 350, "TITAN": 375, "BAJFINANCE": 125,
-    "WIPRO": 1500, "HCLTECH": 350, "ADANIENT": 250, "TATAMOTORS": 1400,
-    "TATASTEEL": 5500, "POWERGRID": 2700, "NTPC": 2250, "ONGC": 3250,
-    "COALINDIA": 1700, "JSWSTEEL": 900, "DRREDDY": 125, "BAJAJFINSV": 500,
-    "ASIANPAINT": 300, "TECHM": 600, "INDUSINDBK": 700, "M&M": 350,
-    "CIPLA": 650, "EICHERMOT": 150, "SBILIFE": 750,
-}
+INDICES = ["NIFTY", "BANKNIFTY"]
+
+STOCKS = [
+    "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL",
+    "SBIN", "ITC", "LT", "HINDUNILVR", "KOTAKBANK", "AXISBANK",
+    "MARUTI", "SUNPHARMA", "TITAN", "BAJFINANCE", "WIPRO", "HCLTECH",
+    "ADANIENT", "TATAMOTORS", "TATASTEEL", "POWERGRID", "NTPC", "ONGC",
+    "COALINDIA", "JSWSTEEL", "DRREDDY", "BAJAJFINSV", "ASIANPAINT",
+    "TECHM", "INDUSINDBK", "M&M", "CIPLA", "EICHERMOT", "SBILIFE",
+]
+
+ALL_SYMBOLS = INDICES + STOCKS
 
 STRIKE_STEP = {"NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50}
-
-INDICES = ["NIFTY", "BANKNIFTY"]
-STOCKS = [s for s in LOT_SIZES if s not in INDICES and s != "FINNIFTY"]
-ALL_SYMBOLS = INDICES + STOCKS
 
 INSTRUMENT_KEYS = {
     "NIFTY":     "NSE_INDEX|Nifty 50",
@@ -34,6 +33,32 @@ INSTRUMENT_KEYS = {
     "FINNIFTY":  "NSE_INDEX|Nifty Fin Service",
     "VIX":       "NSE_INDEX|India VIX",
 }
+
+_lot_size_cache: dict[str, int] = {}
+
+
+def get_lot_size(symbol: str, instrument_key: str = None) -> int:
+    """Get lot size from API via /option/contract. Cached after first call.
+
+    Falls back to 1 if API fails (data collection doesn't need lot size).
+    """
+    if symbol in _lot_size_cache:
+        return _lot_size_cache[symbol]
+
+    key = instrument_key or INSTRUMENT_KEYS.get(symbol)
+    if not key:
+        return 1
+
+    try:
+        from utils.upstox_data import _get, _BASE
+        data = _get(f"{_BASE}/option/contract", {"instrument_key": key}, timeout=10)
+        if data and isinstance(data, list) and data:
+            lot = int(data[0].get("lot_size", 1) or 1)
+            _lot_size_cache[symbol] = lot
+            return lot
+    except Exception:
+        pass
+    return 1
 
 
 def load_env(path: Path = None) -> int:

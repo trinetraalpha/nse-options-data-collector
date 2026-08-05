@@ -32,18 +32,6 @@ INSTRUMENT_KEYS = {
 
 EQUITY_KEYS: dict[str, str] = {}
 
-LOT_SIZES = {
-    "NIFTY": 75, "BANKNIFTY": 30, "FINNIFTY": 65,
-    "RELIANCE": 250, "TCS": 175, "HDFCBANK": 550, "INFY": 300,
-    "ICICIBANK": 700, "BHARTIARTL": 475, "SBIN": 750, "ITC": 1600,
-    "LT": 150, "HINDUNILVR": 300, "KOTAKBANK": 400, "AXISBANK": 625,
-    "MARUTI": 100, "SUNPHARMA": 350, "TITAN": 375, "BAJFINANCE": 125,
-    "WIPRO": 1500, "HCLTECH": 350, "ADANIENT": 250, "TATAMOTORS": 1400,
-    "TATASTEEL": 5500, "POWERGRID": 2700, "NTPC": 2250, "ONGC": 3250,
-    "COALINDIA": 1700, "JSWSTEEL": 900, "DRREDDY": 125, "BAJAJFINSV": 500,
-    "ASIANPAINT": 300, "TECHM": 600, "INDUSINDBK": 700, "M&M": 350,
-    "CIPLA": 650, "EICHERMOT": 150, "SBILIFE": 750,
-}
 
 STRIKE_STEP = {"NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50}
 
@@ -399,8 +387,9 @@ def get_option_chain(symbol: str, expiry_date: str,
         spot = spot_data["ltp"] if spot_data else 0
     if spot <= 0:
         return None
+    from config import get_lot_size
     step = STRIKE_STEP.get(symbol, 50)
-    lot_size = LOT_SIZES.get(symbol, 50)
+    lot_size = get_lot_size(symbol)
     atm = round(spot / step) * step
     exp_dt = date.fromisoformat(expiry_date)
     dte = (exp_dt - date.today()).days
