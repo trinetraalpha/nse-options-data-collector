@@ -105,8 +105,10 @@ data/
 ### OI Snapshot columns (26 per symbol per day)
 `timestamp, symbol, expiry, spot, total_ce_oi, total_pe_oi, pcr, max_ce_oi, max_ce_oi_strike, max_pe_oi, max_pe_oi_strike, atm_strike, atm_ce_ltp, atm_ce_bid, atm_ce_ask, atm_pe_ltp, atm_pe_bid, atm_pe_ask, ce_oi_signal, pe_oi_signal, oi_change_pct, ce_oi_change_pct, pe_oi_change_pct, pcr_change`
 
-### Option Chain columns (per strike row)
-`timestamp, symbol, expiry, spot, strike, ce_oi, ce_volume, ce_ltp, ce_bid, ce_ask, ce_iv, ce_delta, ce_theta, ce_gamma, ce_vega, pe_oi, pe_volume, pe_ltp, pe_bid, pe_ask, pe_iv, pe_delta, pe_theta, pe_gamma, pe_vega`
+### Option Chain / Options Data columns (normalized per contract row)
+`Timestamp, Symbol, Open, High, Low, Close, Volume, Open_Interest, Expiry_Date, Strike_Price, Option_Type, Bid_Price, Ask_Price, Spot_Price, IV, Delta, Theta, Gamma, Vega`
+
+Each option contract (Call / Put) is captured with full market data (OHLC, volume, open interest, quotes) and greeks. Saved to `data/option_chain/` as both Parquet and CSV files.
 
 ### Sample Data
 

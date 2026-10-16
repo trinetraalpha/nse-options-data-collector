@@ -312,6 +312,54 @@ def get_greeks(instrument_keys: list[str]) -> dict | None:
     return result if result else None
 
 
+def fetch_option_quotes_ohlc(instrument_keys: list[str]) -> dict[str, dict]:
+    """Fetch OHLC quotes for option instrument keys (batches of up to 100).
+
+    Returns dict mapping instrument_key to {"open": float, "high": float, "low": float, "close": float, "ltp": float}
+    """
+    if not instrument_keys:
+        return {}
+
+    results = {}
+    batch_size = 100
+    for i in range(0, len(instrument_keys), batch_size):
+        batch = instrument_keys[i:i + batch_size]
+        keys_str = ",".join(batch)
+        try:
+            data = _get_v3("/market-quote/ohlc", {"instrument_key": keys_str, "interval": "1d"})
+            if not data:
+                data = _get(f"{_BASE}/market-quote/ohlc", {"instrument_key": keys_str, "interval": "1d"})
+            if data and isinstance(data, dict):
+                for raw_k, item in data.items():
+                    if not isinstance(item, dict):
+                        continue
+                    live = item.get("live_ohlc") or item.get("ohlc") or {}
+                    prev = item.get("prev_ohlc") or {}
+                    ltp = float(item.get("last_price", 0) or live.get("close", 0) or prev.get("close", 0) or 0)
+                    open_val = float(live.get("open", 0) or prev.get("open", 0) or ltp)
+                    high_val = float(live.get("high", 0) or prev.get("high", 0) or max(ltp, open_val))
+                    low_val = float(live.get("low", 0) or prev.get("low", 0) or (min(ltp, open_val) if min(ltp, open_val) > 0 else ltp))
+                    close_val = ltp if ltp > 0 else float(live.get("close", 0) or prev.get("close", 0) or 0)
+
+                    entry_dict = {
+                        "open": round(open_val, 2),
+                        "high": round(high_val, 2),
+                        "low": round(low_val, 2),
+                        "close": round(close_val, 2),
+                        "ltp": round(ltp, 2),
+                    }
+                    results[raw_k] = entry_dict
+                    token = item.get("instrument_token") or item.get("instrument_key")
+                    if token:
+                        results[token] = entry_dict
+                    norm_k = raw_k.replace(":", "|")
+                    results[norm_k] = entry_dict
+        except Exception as e:
+            log.debug("fetch_option_quotes_ohlc batch failed: %s", e)
+
+    return results
+
+
 # ══════════════════════════════════════════════════════════════════
 #  EXPIRY DATES
 # ══════════════════════════════════════════════════════════════════
@@ -434,7 +482,14 @@ def get_option_chain(symbol: str, expiry_date: str,
 
 
 def _build_option_side(ltp, bid, ask, oi, md, greeks, default_delta) -> dict:
+    ohlc = md.get("ohlc", {})
+    open_p = float(ohlc.get("open", 0) or md.get("open", 0) or ltp)
+    high_p = float(ohlc.get("high", 0) or md.get("high", 0) or max(ltp, open_p or ltp))
+    low_p = float(ohlc.get("low", 0) or md.get("low", 0) or (min(ltp, open_p) if min(ltp, open_p) > 0 else ltp))
+    close_p = ltp if ltp > 0 else float(ohlc.get("close", 0) or 0)
     return {
+        "open": round(open_p, 2), "high": round(high_p, 2),
+        "low": round(low_p, 2), "close": round(close_p, 2),
         "ltp": round(ltp, 2), "bid": round(bid, 2), "ask": round(ask, 2),
         "spread_pct": round((ask - bid) / ltp * 100, 2) if ltp > 0 else 0,
         "iv": round(float(greeks.get("iv", 0) or 0), 2),

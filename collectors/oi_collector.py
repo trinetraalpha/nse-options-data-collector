@@ -381,11 +381,48 @@ def save_cas_closing(df: pd.DataFrame):
     log.info("Saved CAS closing data to %s", path)
 
 
-def collect_chain_snapshot() -> pd.DataFrame:
-    """Collect full option chain (all strikes) for all symbols.
+def _extract_contract_ohlc(opt_data: dict, opt_key: str, ohlc_cache: dict) -> tuple[float, float, float, float]:
+    """Extract Open, High, Low, Close for an option contract."""
+    md = opt_data.get("market_data", {})
+    ltp = float(md.get("ltp", 0) or 0)
+    close_price = float(md.get("close_price", 0) or md.get("cp", 0) or 0)
 
-    Saves per-strike: OI, IV, delta, theta, gamma, vega, LTP, bid, ask, volume
-    for both CE and PE sides.
+    # 1. From market_data ohlc subdict if present
+    md_ohlc = md.get("ohlc")
+    if md_ohlc and isinstance(md_ohlc, dict):
+        open_val = float(md_ohlc.get("open", 0) or ltp)
+        high_val = float(md_ohlc.get("high", 0) or max(ltp, open_val))
+        low_val = float(md_ohlc.get("low", 0) or (min(ltp, open_val) if min(ltp, open_val) > 0 else ltp))
+        close_val = ltp if ltp > 0 else float(md_ohlc.get("close", 0) or close_price)
+        return open_val, high_val, low_val, close_val
+
+    # 2. From ohlc_cache (fetched quotes) if present
+    if opt_key:
+        cached = ohlc_cache.get(opt_key) or ohlc_cache.get(opt_key.replace("|", ":"))
+        if cached:
+            return (
+                float(cached.get("open", ltp)),
+                float(cached.get("high", ltp)),
+                float(cached.get("low", ltp)),
+                float(cached.get("close", ltp or close_price)),
+            )
+
+    # 3. Direct fields in market_data
+    open_val = float(md.get("open", 0) or md.get("open_price", 0) or ltp)
+    high_val = float(md.get("high", 0) or md.get("high_price", 0) or max(ltp, open_val))
+    low_val = float(md.get("low", 0) or md.get("low_price", 0) or (min(ltp, open_val) if min(ltp, open_val) > 0 else ltp))
+    close_val = ltp if ltp > 0 else close_price
+
+    return open_val, high_val, low_val, close_val
+
+
+def collect_chain_snapshot() -> pd.DataFrame:
+    """Collect full option chain for all symbols.
+
+    Saves normalized per-contract records:
+    Timestamp, Symbol, Open, High, Low, Close, Volume, Open_Interest,
+    Expiry_Date, Strike_Price, Option_Type, Bid_Price, Ask_Price
+    (plus Spot_Price, IV, Delta, Theta, Gamma, Vega).
     """
     now = datetime.now(IST)
     timestamp = now.isoformat()
@@ -424,8 +461,35 @@ def collect_chain_snapshot() -> pd.DataFrame:
             continue
 
         chain_rows = chain_data if isinstance(chain_data, list) else []
+
+        # Collect option contract keys to fetch OHLC quotes if not directly in market_data
+        contract_keys = []
         for strike_row in chain_rows:
-            strike = int(strike_row.get("strike_price", 0) or 0)
+            ce_k = strike_row.get("call_options", {}).get("instrument_key", "")
+            pe_k = strike_row.get("put_options", {}).get("instrument_key", "")
+            if ce_k:
+                contract_keys.append(ce_k)
+            if pe_k:
+                contract_keys.append(pe_k)
+
+        ohlc_cache = {}
+        sample_md = chain_rows[0].get("call_options", {}).get("market_data", {}) if chain_rows else {}
+        if "ohlc" not in sample_md and contract_keys:
+            try:
+                from utils.upstox_data import fetch_option_quotes_ohlc
+                ohlc_cache = fetch_option_quotes_ohlc(contract_keys)
+            except Exception as e:
+                log.debug("OHLC quotes fetch skipped for %s: %s", sym, e)
+
+        for strike_row in chain_rows:
+            raw_strike = strike_row.get("strike_price", 0)
+            try:
+                strike = int(raw_strike)
+            except (ValueError, TypeError):
+                try:
+                    strike = float(raw_strike)
+                except (ValueError, TypeError):
+                    continue
             if strike == 0:
                 continue
 
@@ -435,38 +499,63 @@ def collect_chain_snapshot() -> pd.DataFrame:
             pe_md = pe.get("market_data", {})
             ce_greeks = ce.get("option_greeks", {})
             pe_greeks = pe.get("option_greeks", {})
+            ce_key = ce.get("instrument_key", "")
+            pe_key = pe.get("instrument_key", "")
 
-            rows.append({
-                "timestamp": timestamp, "symbol": sym, "expiry": expiry,
-                "spot": spot, "strike": strike,
-                "ce_oi": int(ce_md.get("oi", 0) or 0),
-                "ce_volume": int(ce_md.get("volume", 0) or 0),
-                "ce_ltp": float(ce_md.get("ltp", 0) or 0),
-                "ce_bid": float(ce_md.get("bid_price", 0) or 0),
-                "ce_ask": float(ce_md.get("ask_price", 0) or 0),
-                "ce_iv": float(ce_greeks.get("iv", 0) or 0),
-                "ce_delta": float(ce_greeks.get("delta", 0) or 0),
-                "ce_theta": float(ce_greeks.get("theta", 0) or 0),
-                "ce_gamma": float(ce_greeks.get("gamma", 0) or 0),
-                "ce_vega": float(ce_greeks.get("vega", 0) or 0),
-                "pe_oi": int(pe_md.get("oi", 0) or 0),
-                "pe_volume": int(pe_md.get("volume", 0) or 0),
-                "pe_ltp": float(pe_md.get("ltp", 0) or 0),
-                "pe_bid": float(pe_md.get("bid_price", 0) or 0),
-                "pe_ask": float(pe_md.get("ask_price", 0) or 0),
-                "pe_iv": float(pe_greeks.get("iv", 0) or 0),
-                "pe_delta": float(pe_greeks.get("delta", 0) or 0),
-                "pe_theta": float(pe_greeks.get("theta", 0) or 0),
-                "pe_gamma": float(pe_greeks.get("gamma", 0) or 0),
-                "pe_vega": float(pe_greeks.get("vega", 0) or 0),
-            })
+            if ce and (ce_key or ce_md.get("oi") or ce_md.get("ltp") or strike > 0):
+                ce_o, ce_h, ce_l, ce_c = _extract_contract_ohlc(ce, ce_key, ohlc_cache)
+                rows.append({
+                    "Timestamp": timestamp,
+                    "Symbol": sym,
+                    "Open": round(ce_o, 2),
+                    "High": round(ce_h, 2),
+                    "Low": round(ce_l, 2),
+                    "Close": round(ce_c, 2),
+                    "Volume": int(ce_md.get("volume", 0) or 0),
+                    "Open_Interest": int(ce_md.get("oi", 0) or 0),
+                    "Expiry_Date": expiry,
+                    "Strike_Price": strike,
+                    "Option_Type": "CE",
+                    "Bid_Price": round(float(ce_md.get("bid_price", 0) or 0), 2),
+                    "Ask_Price": round(float(ce_md.get("ask_price", 0) or 0), 2),
+                    "Spot_Price": spot,
+                    "IV": round(float(ce_greeks.get("iv", 0) or 0), 4),
+                    "Delta": round(float(ce_greeks.get("delta", 0) or 0), 4),
+                    "Theta": round(float(ce_greeks.get("theta", 0) or 0), 4),
+                    "Gamma": round(float(ce_greeks.get("gamma", 0) or 0), 6),
+                    "Vega": round(float(ce_greeks.get("vega", 0) or 0), 4),
+                })
+
+            if pe and (pe_key or pe_md.get("oi") or pe_md.get("ltp") or strike > 0):
+                pe_o, pe_h, pe_l, pe_c = _extract_contract_ohlc(pe, pe_key, ohlc_cache)
+                rows.append({
+                    "Timestamp": timestamp,
+                    "Symbol": sym,
+                    "Open": round(pe_o, 2),
+                    "High": round(pe_h, 2),
+                    "Low": round(pe_l, 2),
+                    "Close": round(pe_c, 2),
+                    "Volume": int(pe_md.get("volume", 0) or 0),
+                    "Open_Interest": int(pe_md.get("oi", 0) or 0),
+                    "Expiry_Date": expiry,
+                    "Strike_Price": strike,
+                    "Option_Type": "PE",
+                    "Bid_Price": round(float(pe_md.get("bid_price", 0) or 0), 2),
+                    "Ask_Price": round(float(pe_md.get("ask_price", 0) or 0), 2),
+                    "Spot_Price": spot,
+                    "IV": round(float(pe_greeks.get("iv", 0) or 0), 4),
+                    "Delta": round(float(pe_greeks.get("delta", 0) or 0), 4),
+                    "Theta": round(float(pe_greeks.get("theta", 0) or 0), 4),
+                    "Gamma": round(float(pe_greeks.get("gamma", 0) or 0), 6),
+                    "Vega": round(float(pe_greeks.get("vega", 0) or 0), 4),
+                })
 
         success += 1
         if success % 10 == 0:
             log.info("Chain progress: %d/%d collected", success, len(all_symbols))
         time.sleep(0.3)
 
-    log.info("Chain snapshot: %d success (%d strikes), %d failed",
+    log.info("Chain snapshot: %d success (%d option contract rows), %d failed",
              success, len(rows), len(failed))
     if failed:
         log.warning("Chain failed symbols: %s", failed)
@@ -474,7 +563,10 @@ def collect_chain_snapshot() -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 
-def save_chain_snapshot(df: pd.DataFrame):
+collect_options_data = collect_chain_snapshot
+
+
+def save_chain_snapshot(df: pd.DataFrame, save_csv: bool = True):
     if df.empty:
         return
     os.makedirs(CHAIN_DIR, exist_ok=True)
@@ -482,9 +574,19 @@ def save_chain_snapshot(df: pd.DataFrame):
     path = os.path.join(CHAIN_DIR, f"chain_{today_str}.parquet")
     if os.path.isfile(path):
         existing = pd.read_parquet(path)
-        df = pd.concat([existing, df], ignore_index=True)
-    df.to_parquet(path, engine="pyarrow", index=False)
-    log.info("Saved %d chain rows to %s", len(df), path)
+        df_to_save = pd.concat([existing, df], ignore_index=True)
+    else:
+        df_to_save = df
+    df_to_save.to_parquet(path, engine="pyarrow", index=False)
+    log.info("Saved %d chain rows to %s", len(df_to_save), path)
+
+    if save_csv:
+        csv_path = os.path.join(CHAIN_DIR, f"chain_{today_str}.csv")
+        df_to_save.to_csv(csv_path, index=False)
+        log.info("Saved %d chain rows to %s", len(df_to_save), csv_path)
+
+
+save_options_data = save_chain_snapshot
 
 
 def run_schedule():
@@ -557,15 +659,18 @@ def show_info():
     if os.path.isdir(CHAIN_DIR):
         files = sorted(f for f in os.listdir(CHAIN_DIR) if f.startswith("chain_") and f.endswith(".parquet"))
         if files:
-            print("=== Option Chain ===")
+            print("=== Option Chain / Options Data ===")
             total_rows = 0
             for f in files:
                 path = os.path.join(CHAIN_DIR, f)
                 df = pd.read_parquet(path)
                 total_rows += len(df)
-                timestamps = df["timestamp"].nunique()
-                symbols = df["symbol"].nunique()
-                strikes = df["strike"].nunique()
+                ts_col = "Timestamp" if "Timestamp" in df.columns else "timestamp"
+                sym_col = "Symbol" if "Symbol" in df.columns else "symbol"
+                strike_col = "Strike_Price" if "Strike_Price" in df.columns else "strike"
+                timestamps = df[ts_col].nunique() if ts_col in df.columns else 1
+                symbols = df[sym_col].nunique() if sym_col in df.columns else 1
+                strikes = df[strike_col].nunique() if strike_col in df.columns else len(df)
                 print(f"  {f}: {len(df)} rows, {timestamps} snapshots, {symbols} symbols, {strikes} strikes")
             print(f"Total: {len(files)} days, {total_rows} rows\n")
 
@@ -579,6 +684,7 @@ if __name__ == "__main__":
     parser.add_argument("--schedule", action="store_true", help="Every 15 min 9:20-15:29 + CAS at 15:42")
     parser.add_argument("--cas", action="store_true", help="Collect CAS closing prices now")
     parser.add_argument("--chain", action="store_true", help="Collect full option chain snapshot now")
+    parser.add_argument("--options", action="store_true", help="Collect full option data snapshot now (alias to --chain)")
     parser.add_argument("--info", action="store_true", help="Show collected data summary")
     args = parser.parse_args()
 
@@ -593,13 +699,20 @@ if __name__ == "__main__":
             print(cas_df.to_string(index=False))
         else:
             print("No CAS data collected")
-    elif args.chain:
-        log.info("Collecting full option chain...")
+    elif args.chain or args.options:
+        log.info("Collecting full options data snapshot...")
         chain_df = collect_chain_snapshot()
         if not chain_df.empty:
             save_chain_snapshot(chain_df)
-            symbols = chain_df["symbol"].nunique()
-            print(f"\nCollected chain: {symbols} symbols, {len(chain_df)} strike rows")
+            sym_col = "Symbol" if "Symbol" in chain_df.columns else ("symbol" if "symbol" in chain_df.columns else None)
+            symbols = chain_df[sym_col].nunique() if sym_col else len(chain_df)
+            print(f"\nCollected option data: {symbols} symbols, {len(chain_df)} contract rows")
+            sample_cols = [c for c in [
+                "Timestamp", "Symbol", "Expiry_Date", "Strike_Price", "Option_Type",
+                "Open", "High", "Low", "Close", "Volume", "Open_Interest", "Bid_Price", "Ask_Price"
+            ] if c in chain_df.columns]
+            if sample_cols:
+                print(chain_df[sample_cols].head(10).to_string(index=False))
         else:
             print("No chain data collected")
     elif args.schedule:

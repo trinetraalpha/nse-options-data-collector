@@ -42,23 +42,38 @@ def show_chain():
         return
 
     files = sorted(f for f in os.listdir(chain_dir) if f.startswith("chain_") and f.endswith(".parquet"))
-    print(f"\n=== Option Chain ({len(files)} days) ===")
+    print(f"\n=== Option Chain / Options Data ({len(files)} days) ===")
     for f in files:
         df = pd.read_parquet(os.path.join(chain_dir, f))
-        ts = df["timestamp"].nunique()
-        syms = df["symbol"].nunique()
-        print(f"  {f}: {ts} snapshots, {syms} symbols, {len(df)} strike rows")
+        ts_col = "Timestamp" if "Timestamp" in df.columns else "timestamp"
+        sym_col = "Symbol" if "Symbol" in df.columns else "symbol"
+        ts = df[ts_col].nunique() if ts_col in df.columns else 1
+        syms = df[sym_col].nunique() if sym_col in df.columns else 1
+        print(f"  {f}: {ts} snapshots, {syms} symbols, {len(df)} rows")
 
     if files:
         latest = pd.read_parquet(os.path.join(chain_dir, files[-1]))
-        last_ts = latest["timestamp"].max()
-        nifty = latest[(latest["timestamp"] == last_ts) & (latest["symbol"] == "NIFTY")]
+        ts_col = "Timestamp" if "Timestamp" in latest.columns else "timestamp"
+        sym_col = "Symbol" if "Symbol" in latest.columns else "symbol"
+        last_ts = latest[ts_col].max() if ts_col in latest.columns else None
+        subset = latest[latest[ts_col] == last_ts] if last_ts is not None else latest.copy()
+        nifty = subset[subset[sym_col] == "NIFTY"] if sym_col in subset else subset
         if not nifty.empty:
-            spot = nifty["spot"].iloc[0]
-            near = nifty.iloc[(nifty["strike"] - spot).abs().argsort()[:5]]
-            print(f"\nNIFTY ATM (spot={spot}):")
-            print(near[["strike", "ce_ltp", "ce_iv", "ce_delta", "ce_oi",
-                         "pe_ltp", "pe_iv", "pe_delta", "pe_oi"]].to_string(index=False))
+            strike_col = "Strike_Price" if "Strike_Price" in nifty.columns else "strike"
+            spot_col = "Spot_Price" if "Spot_Price" in nifty.columns else ("spot" if "spot" in nifty.columns else None)
+            spot = nifty[spot_col].iloc[0] if spot_col else 0
+            print(f"\nNIFTY Options Data Snapshot (spot={spot}):")
+            if strike_col in nifty.columns and spot > 0:
+                near = nifty.iloc[(nifty[strike_col] - spot).abs().argsort()[:10]]
+            else:
+                near = nifty.head(10)
+            cols = [c for c in [
+                "Timestamp", "Symbol", "Expiry_Date", "Strike_Price", "Option_Type",
+                "Open", "High", "Low", "Close", "Volume", "Open_Interest", "Bid_Price", "Ask_Price"
+            ] if c in near.columns]
+            if not cols:
+                cols = list(near.columns[:10])
+            print(near[cols].to_string(index=False))
 
 
 def show_global():
