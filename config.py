@@ -14,6 +14,8 @@ LOG_DIR  = ROOT_DIR / "logs"
 
 INDICES = ["NIFTY", "BANKNIFTY"]
 
+COMMODITIES = ["CRUDEOIL"]
+
 STOCKS = [
     "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL",
     "SBIN", "ITC", "LT", "HINDUNILVR", "KOTAKBANK", "AXISBANK",
@@ -23,15 +25,38 @@ STOCKS = [
     "TECHM", "INDUSINDBK", "M&M", "CIPLA", "EICHERMOT", "SBILIFE",
 ]
 
-ALL_SYMBOLS = INDICES + STOCKS
+ALL_SYMBOLS = INDICES + STOCKS + COMMODITIES
 
-STRIKE_STEP = {"NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50}
+STRIKE_STEP = {
+    "NIFTY": 50,
+    "BANKNIFTY": 100,
+    "FINNIFTY": 50,
+    "CRUDEOIL": 500,
+    "CRUDE": 500,
+}
+
+EXCHANGE_MAP = {
+    "NIFTY": "NSE",
+    "BANKNIFTY": "NSE",
+    "FINNIFTY": "NSE",
+    "VIX": "NSE",
+    "CRUDEOIL": "MCX",
+    "CRUDE": "MCX",
+}
 
 INSTRUMENT_KEYS = {
     "NIFTY":     "NSE_INDEX|Nifty 50",
     "BANKNIFTY": "NSE_INDEX|Nifty Bank",
     "FINNIFTY":  "NSE_INDEX|Nifty Fin Service",
     "VIX":       "NSE_INDEX|India VIX",
+    "CRUDEOIL":  "MCX_FO|CRUDEOIL",
+    "CRUDE":     "MCX_FO|CRUDEOIL",
+}
+
+DEFAULT_LOT_SIZES = {
+    "CRUDEOIL": 100,
+    "CRUDE": 100,
+    "CRUDEOILM": 10,
 }
 
 _lot_size_cache: dict[str, int] = {}
@@ -58,7 +83,8 @@ def get_lot_size(symbol: str, instrument_key: str = None) -> int:
             return lot
     except Exception:
         pass
-    return 1
+    fallback = DEFAULT_LOT_SIZES.get(symbol, 1)
+    return fallback
 
 
 def load_env(path: Path = None) -> int:

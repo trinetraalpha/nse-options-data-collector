@@ -75,6 +75,17 @@ def show_chain():
                 cols = list(near.columns[:10])
             print(near[cols].to_string(index=False))
 
+        crude = subset[subset[sym_col] == "CRUDEOIL"] if sym_col in subset else None
+        if crude is not None and not crude.empty:
+            spot_col = "Spot_Price" if "Spot_Price" in crude.columns else ("spot" if "spot" in crude.columns else None)
+            spot = crude[spot_col].iloc[0] if spot_col else 0
+            print(f"\nCRUDEOIL MCX Options Data (step=500, spot={spot}):")
+            cols = [c for c in [
+                "Timestamp", "Symbol", "Expiry_Date", "Strike_Price", "Option_Type",
+                "Open", "High", "Low", "Close", "Volume", "Open_Interest", "Bid_Price", "Ask_Price"
+            ] if c in crude.columns]
+            print(crude[cols].head(10).to_string(index=False))
+
 
 def show_global():
     global_dir = os.path.join(DATA_DIR, "global_cues")

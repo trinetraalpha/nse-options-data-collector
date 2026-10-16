@@ -49,9 +49,24 @@ STOCKS = [
 
 INDICES = ["NIFTY", "BANKNIFTY"]
 
+COMMODITIES = ["CRUDEOIL"]
+
 INDEX_KEYS = {
     "NIFTY": "NSE_INDEX|Nifty 50",
     "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+}
+
+COMMODITY_KEYS = {
+    "CRUDEOIL": "MCX_FO|CRUDEOIL",
+    "CRUDE":    "MCX_FO|CRUDEOIL",
+}
+
+STRIKE_STEP = {
+    "NIFTY": 50,
+    "BANKNIFTY": 100,
+    "FINNIFTY": 50,
+    "CRUDEOIL": 500,
+    "CRUDE": 500,
 }
 
 _key_cache: dict[str, str] = {}
@@ -85,12 +100,21 @@ def _has_fo_contracts(instrument_key: str) -> bool:
 def _resolve_key(symbol: str, force_refresh: bool = False) -> str | None:
     if symbol in INDEX_KEYS:
         return INDEX_KEYS[symbol]
+    if symbol in COMMODITY_KEYS:
+        return COMMODITY_KEYS[symbol]
     if symbol in _key_cache and not force_refresh:
         return _key_cache[symbol]
 
+    is_mcx = symbol.upper() in ("CRUDEOIL", "CRUDE")
+    exchanges = "MCX" if is_mcx else "NSE"
+    segments = "COMM" if is_mcx else "EQ"
     data = _get(f"{_BASE}/instruments/search", {
-        "query": symbol, "exchanges": "NSE", "segments": "EQ",
+        "query": symbol, "exchanges": exchanges, "segments": segments,
     }, timeout=10)
+    if not data and is_mcx:
+        data = _get(f"{_BASE}/instruments/search", {
+            "query": symbol, "exchanges": "MCX",
+        }, timeout=10)
     candidates = []
     if data:
         results = data if isinstance(data, list) else []
@@ -100,7 +124,7 @@ def _resolve_key(symbol: str, force_refresh: bool = False) -> str | None:
                 candidates.append(key)
 
     for key in candidates:
-        if _has_fo_contracts(key):
+        if is_mcx or _has_fo_contracts(key):
             _key_cache[symbol] = key
             _save_key_cache()
             return key
@@ -113,14 +137,16 @@ def _resolve_key(symbol: str, force_refresh: bool = False) -> str | None:
     return None
 
 
-def _get_nearest_expiry(instrument_key: str) -> str | None:
+def _get_nearest_expiry(instrument_key: str, symbol: str = "") -> str | None:
     data = _get(f"{_BASE}/option/contract", {"instrument_key": instrument_key}, timeout=10)
+    if not data and (symbol.upper() in ("CRUDEOIL", "CRUDE") or "MCX" in instrument_key):
+        data = _get(f"{_BASE}/instruments/search", {"query": symbol or "CRUDEOIL", "exchanges": "MCX"}, timeout=10)
     if not data:
         return None
     today = date.today()
     expiries = set()
-    for contract in data:
-        exp_str = contract.get("expiry", "")
+    for contract in (data if isinstance(data, list) else []):
+        exp_str = contract.get("expiry") or contract.get("expiry_date", "")
         if not exp_str:
             continue
         try:
@@ -177,7 +203,7 @@ def collect_snapshot() -> pd.DataFrame:
     timestamp = now.isoformat()
     rows = []
 
-    all_symbols = INDICES + STOCKS
+    all_symbols = INDICES + STOCKS + COMMODITIES
     success = 0
     failed = []
 
@@ -190,6 +216,52 @@ def collect_snapshot() -> pd.DataFrame:
             log.warning("Could not resolve key for %s", sym)
             failed.append(sym)
             continue
+
+        if sym.upper() in ("CRUDEOIL", "CRUDE"):
+            from utils.upstox_data import get_mcx_option_chain
+            mcx_res = get_mcx_option_chain(sym, step=500)
+            if mcx_res and mcx_res.get("chain"):
+                spot = float(mcx_res.get("spot", 0) or 0)
+                expiry = mcx_res.get("expiry", "")
+                total_calls = int(mcx_res.get("total_ce_oi", 0) or 0)
+                total_puts = int(mcx_res.get("total_pe_oi", 0) or 0)
+                pcr = float(mcx_res.get("pcr", 0) or 0)
+                atm_strike = int(mcx_res.get("atm_strike", 0) or 0)
+                max_ce_oi = max_pe_oi = 0
+                max_ce_oi_strike = max_pe_oi_strike = 0
+                for item in mcx_res["chain"]:
+                    stk = item["strike"]
+                    c_oi = item["CE"].get("oi", 0)
+                    p_oi = item["PE"].get("oi", 0)
+                    if c_oi > max_ce_oi:
+                        max_ce_oi = c_oi
+                        max_ce_oi_strike = stk
+                    if p_oi > max_pe_oi:
+                        max_pe_oi = p_oi
+                        max_pe_oi_strike = stk
+                atm_item = next((i for i in mcx_res["chain"] if i["strike"] == atm_strike), mcx_res["chain"][0] if mcx_res["chain"] else None)
+                atm_ce_bid = float(atm_item["CE"].get("bid", 0) if atm_item else 0)
+                atm_ce_ask = float(atm_item["CE"].get("ask", 0) if atm_item else 0)
+                atm_ce_ltp = float(atm_item["CE"].get("ltp", 0) if atm_item else 0)
+                atm_pe_bid = float(atm_item["PE"].get("bid", 0) if atm_item else 0)
+                atm_pe_ask = float(atm_item["PE"].get("ask", 0) if atm_item else 0)
+                atm_pe_ltp = float(atm_item["PE"].get("ltp", 0) if atm_item else 0)
+                rows.append({
+                    "timestamp": timestamp, "symbol": sym, "expiry": expiry, "spot": spot,
+                    "total_ce_oi": total_calls, "total_pe_oi": total_puts, "pcr": pcr,
+                    "max_ce_oi": max_ce_oi, "max_ce_oi_strike": max_ce_oi_strike,
+                    "max_pe_oi": max_pe_oi, "max_pe_oi_strike": max_pe_oi_strike,
+                    "num_strikes": len(mcx_res["chain"]), "atm_strike": atm_strike,
+                    "atm_ce_ltp": atm_ce_ltp, "atm_ce_bid": atm_ce_bid, "atm_ce_ask": atm_ce_ask,
+                    "atm_ce_spread": round(atm_ce_ask - atm_ce_bid, 2),
+                    "atm_pe_ltp": atm_pe_ltp, "atm_pe_bid": atm_pe_bid, "atm_pe_ask": atm_pe_ask,
+                    "atm_pe_spread": round(atm_pe_ask - atm_pe_bid, 2),
+                    "ce_oi_signal": "NEUTRAL", "pe_oi_signal": "NEUTRAL",
+                    "oi_change_pct": 0.0, "ce_oi_change_pct": 0.0, "pe_oi_change_pct": 0.0,
+                    "pcr_change": 0.0,
+                })
+                success += 1
+                continue
 
         expiry = _get_nearest_expiry(key)
         if not expiry and sym in _key_cache:
@@ -428,19 +500,61 @@ def collect_chain_snapshot() -> pd.DataFrame:
     timestamp = now.isoformat()
     rows = []
 
-    all_symbols = INDICES + STOCKS
+    all_symbols = INDICES + STOCKS + COMMODITIES
     success = 0
     failed = []
 
     _load_key_cache()
 
     for sym in all_symbols:
+        is_mcx = sym.upper() in ("CRUDEOIL", "CRUDE")
+        step_filter = STRIKE_STEP.get(sym, 500 if is_mcx else None)
+
+        if is_mcx:
+            from utils.upstox_data import get_mcx_option_chain
+            mcx_res = get_mcx_option_chain(sym, step=step_filter or 500)
+            if mcx_res and mcx_res.get("chain"):
+                spot = float(mcx_res.get("spot", 0) or 0)
+                expiry = mcx_res.get("expiry", "")
+                for item in mcx_res["chain"]:
+                    strike = item["strike"]
+                    if step_filter and (strike % step_filter != 0):
+                        continue
+                    for opt_type in ("CE", "PE"):
+                        side = item[opt_type]
+                        rows.append({
+                            "Timestamp": timestamp,
+                            "Symbol": sym,
+                            "Open": side.get("open", side.get("ltp", 0.0)),
+                            "High": side.get("high", side.get("ltp", 0.0)),
+                            "Low": side.get("low", side.get("ltp", 0.0)),
+                            "Close": side.get("close", side.get("ltp", 0.0)),
+                            "Volume": side.get("volume", 0),
+                            "Open_Interest": side.get("oi", 0),
+                            "Expiry_Date": expiry,
+                            "Strike_Price": strike,
+                            "Option_Type": opt_type,
+                            "Bid_Price": side.get("bid", 0.0),
+                            "Ask_Price": side.get("ask", 0.0),
+                            "Spot_Price": spot,
+                            "IV": side.get("iv", 0.0),
+                            "Delta": side.get("delta", 0.0),
+                            "Theta": side.get("theta", 0.0),
+                            "Gamma": side.get("gamma", 0.0),
+                            "Vega": side.get("vega", 0.0),
+                        })
+                success += 1
+                if success % 10 == 0:
+                    log.info("Chain progress: %d/%d collected", success, len(all_symbols))
+                time.sleep(0.3)
+                continue
+
         key = _resolve_key(sym)
         if not key:
             failed.append(sym)
             continue
 
-        expiry = _get_nearest_expiry(key)
+        expiry = _get_nearest_expiry(key, sym)
         if not expiry:
             failed.append(sym)
             continue
@@ -491,6 +605,8 @@ def collect_chain_snapshot() -> pd.DataFrame:
                 except (ValueError, TypeError):
                     continue
             if strike == 0:
+                continue
+            if step_filter and (strike % step_filter != 0):
                 continue
 
             ce = strike_row.get("call_options", {})
@@ -589,6 +705,46 @@ def save_chain_snapshot(df: pd.DataFrame, save_csv: bool = True):
 save_options_data = save_chain_snapshot
 
 
+def collect_crude_snapshot(step: int = 500) -> pd.DataFrame:
+    """Collect single options chain snapshot for CRUDEOIL on MCX with step=500."""
+    from utils.upstox_data import get_mcx_option_chain
+    now = datetime.now(IST)
+    timestamp = now.isoformat()
+    rows = []
+    mcx_res = get_mcx_option_chain("CRUDEOIL", step=step)
+    if mcx_res and mcx_res.get("chain"):
+        spot = float(mcx_res.get("spot", 0) or 0)
+        expiry = mcx_res.get("expiry", "")
+        for item in mcx_res["chain"]:
+            strike = item["strike"]
+            if step > 0 and (strike % step != 0):
+                continue
+            for opt_type in ("CE", "PE"):
+                side = item[opt_type]
+                rows.append({
+                    "Timestamp": timestamp,
+                    "Symbol": "CRUDEOIL",
+                    "Open": side.get("open", side.get("ltp", 0.0)),
+                    "High": side.get("high", side.get("ltp", 0.0)),
+                    "Low": side.get("low", side.get("ltp", 0.0)),
+                    "Close": side.get("close", side.get("ltp", 0.0)),
+                    "Volume": side.get("volume", 0),
+                    "Open_Interest": side.get("oi", 0),
+                    "Expiry_Date": expiry,
+                    "Strike_Price": strike,
+                    "Option_Type": opt_type,
+                    "Bid_Price": side.get("bid", 0.0),
+                    "Ask_Price": side.get("ask", 0.0),
+                    "Spot_Price": spot,
+                    "IV": side.get("iv", 0.0),
+                    "Delta": side.get("delta", 0.0),
+                    "Theta": side.get("theta", 0.0),
+                    "Gamma": side.get("gamma", 0.0),
+                    "Vega": side.get("vega", 0.0),
+                })
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
 def run_schedule():
     """Run every 15 min from 9:20-15:29 IST + CAS closing at 15:42."""
     from utils.market_hours import is_market_day
@@ -685,6 +841,8 @@ if __name__ == "__main__":
     parser.add_argument("--cas", action="store_true", help="Collect CAS closing prices now")
     parser.add_argument("--chain", action="store_true", help="Collect full option chain snapshot now")
     parser.add_argument("--options", action="store_true", help="Collect full option data snapshot now (alias to --chain)")
+    parser.add_argument("--crude", action="store_true", help="Collect MCX Crude Oil options data snapshot (step=500) now")
+    parser.add_argument("--step", type=int, default=500, help="Strike step for MCX Crude Oil (default: 500)")
     parser.add_argument("--info", action="store_true", help="Show collected data summary")
     args = parser.parse_args()
 
@@ -699,6 +857,20 @@ if __name__ == "__main__":
             print(cas_df.to_string(index=False))
         else:
             print("No CAS data collected")
+    elif args.crude:
+        log.info("Collecting MCX Crude Oil options data snapshot (step=%d)...", args.step)
+        crude_df = collect_crude_snapshot(step=args.step)
+        if not crude_df.empty:
+            save_chain_snapshot(crude_df)
+            print(f"\nCollected CRUDEOIL MCX options (step={args.step}): {len(crude_df)} contract rows")
+            sample_cols = [c for c in [
+                "Timestamp", "Symbol", "Expiry_Date", "Strike_Price", "Option_Type",
+                "Open", "High", "Low", "Close", "Volume", "Open_Interest", "Bid_Price", "Ask_Price"
+            ] if c in crude_df.columns]
+            if sample_cols:
+                print(crude_df[sample_cols].head(10).to_string(index=False))
+        else:
+            print("No MCX Crude Oil data collected")
     elif args.chain or args.options:
         log.info("Collecting full options data snapshot...")
         chain_df = collect_chain_snapshot()

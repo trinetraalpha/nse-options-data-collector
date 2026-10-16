@@ -28,12 +28,23 @@ INSTRUMENT_KEYS = {
     "BANKNIFTY": "NSE_INDEX|Nifty Bank",
     "FINNIFTY":  "NSE_INDEX|Nifty Fin Service",
     "VIX":       "NSE_INDEX|India VIX",
+    "CRUDEOIL":  "MCX_FO|CRUDEOIL",
+    "CRUDE":     "MCX_FO|CRUDEOIL",
 }
 
 EQUITY_KEYS: dict[str, str] = {}
+COMMODITY_KEYS: dict[str, str] = {
+    "CRUDEOIL": "MCX_FO|CRUDEOIL",
+    "CRUDE":    "MCX_FO|CRUDEOIL",
+}
 
-
-STRIKE_STEP = {"NIFTY": 50, "BANKNIFTY": 100, "FINNIFTY": 50}
+STRIKE_STEP = {
+    "NIFTY": 50,
+    "BANKNIFTY": 100,
+    "FINNIFTY": 50,
+    "CRUDEOIL": 500,
+    "CRUDE": 500,
+}
 
 _V3_MAX_DAYS = {1: 30, 5: 30, 15: 30, 30: 90, 60: 90}
 
@@ -374,12 +385,14 @@ def get_expiry_dates(symbol: str) -> list[str]:
     if not key:
         return []
     data = _get(f"{_BASE}/option/contract", {"instrument_key": key}, timeout=10)
+    if not data and symbol.upper() in ("CRUDEOIL", "CRUDE"):
+        data = _get(f"{_BASE}/instruments/search", {"query": symbol, "exchanges": "MCX"}, timeout=10)
     if not data:
         return cached[1] if cached else []
     today = date.today()
     expiries = set()
-    for contract in data:
-        exp_str = contract.get("expiry")
+    for contract in data if isinstance(data, list) else []:
+        exp_str = contract.get("expiry") or contract.get("expiry_date", "")
         if not exp_str:
             continue
         try:
@@ -416,15 +429,160 @@ def get_trading_expiry(symbol: str) -> str | None:
 #  OPTION CHAIN
 # ══════════════════════════════════════════════════════════════════
 
+def get_mcx_option_chain(symbol: str = "CRUDEOIL", expiry_date: str = None,
+                         step: int = 500) -> dict | None:
+    """Build option chain for MCX commodity contracts (e.g. CRUDEOIL with step=500).
+
+    Fetches contracts via instruments/search, filters by expiry and strike step,
+    fetches live quotes/OHLC/Greeks, and structures the chain.
+    """
+    from config import get_lot_size
+
+    # 1. Fetch contracts for MCX
+    data = _get(f"{_BASE}/instruments/search", {"query": symbol, "exchanges": "MCX"})
+    if not data or not isinstance(data, list):
+        key = INSTRUMENT_KEYS.get(symbol, "MCX_FO|CRUDEOIL")
+        data = _get(f"{_BASE}/option/contract", {"instrument_key": key})
+    if not data or not isinstance(data, list):
+        return None
+
+    today = date.today()
+    all_expiries = set()
+    for c in data:
+        exp_str = c.get("expiry") or c.get("expiry_date", "")
+        if exp_str:
+            try:
+                exp_d = date.fromisoformat(exp_str[:10])
+                if exp_d >= today:
+                    all_expiries.add(exp_str[:10])
+            except ValueError:
+                pass
+
+    if not all_expiries:
+        return None
+
+    target_expiry = expiry_date if (expiry_date and expiry_date in all_expiries) else sorted(all_expiries)[0]
+
+    # 2. Find underlying futures contract to get spot price
+    spot = 0.0
+    fut_contracts = [
+        c for c in data if c.get("instrument_type") == "FUT" and c.get("instrument_key")
+    ]
+    if fut_contracts:
+        fut_contracts.sort(key=lambda c: c.get("expiry", "9999"))
+        fut_key = fut_contracts[0].get("instrument_key")
+        fut_detail = get_ltp_detail(fut_key)
+        if fut_detail:
+            spot = float(fut_detail.get("last_price", 0) or 0)
+
+    # 3. Filter option contracts matching target_expiry and step=500
+    options_by_strike = {}
+    for c in data:
+        itype = (c.get("instrument_type") or "").upper()
+        if itype not in ("CE", "PE"):
+            continue
+        c_exp = (c.get("expiry") or c.get("expiry_date", ""))[:10]
+        if c_exp != target_expiry:
+            continue
+        raw_strike = c.get("strike_price", 0)
+        try:
+            strike = int(float(raw_strike))
+        except (ValueError, TypeError):
+            continue
+        if strike <= 0:
+            continue
+        if step > 0 and (strike % step != 0):
+            continue
+
+        if strike not in options_by_strike:
+            options_by_strike[strike] = {}
+        options_by_strike[strike][itype] = c
+
+    if not options_by_strike:
+        return None
+
+    # 4. Fetch quotes & greeks
+    keys_to_fetch = []
+    for strike, sides in options_by_strike.items():
+        for itype in ("CE", "PE"):
+            c = sides.get(itype)
+            if c and c.get("instrument_key"):
+                keys_to_fetch.append(c.get("instrument_key"))
+
+    quotes_map = fetch_option_quotes_ohlc(keys_to_fetch)
+    greeks_map = get_greeks(keys_to_fetch[:50]) or {}
+
+    if spot <= 0 and options_by_strike:
+        strikes_list = sorted(options_by_strike.keys())
+        spot = float(strikes_list[len(strikes_list) // 2])
+
+    atm = round(spot / step) * step if step > 0 else spot
+    lot_size = get_lot_size(symbol)
+    exp_dt = date.fromisoformat(target_expiry)
+    dte = (exp_dt - date.today()).days
+
+    chain = []
+    total_ce_oi = 0
+    total_pe_oi = 0
+
+    for strike in sorted(options_by_strike.keys()):
+        sides = options_by_strike[strike]
+        ce_contract = sides.get("CE", {})
+        pe_contract = sides.get("PE", {})
+        ce_key = ce_contract.get("instrument_key", "")
+        pe_key = pe_contract.get("instrument_key", "")
+
+        ce_q = quotes_map.get(ce_key) or quotes_map.get(ce_key.replace("|", ":")) or ce_contract.get("market_data", {})
+        pe_q = quotes_map.get(pe_key) or quotes_map.get(pe_key.replace("|", ":")) or pe_contract.get("market_data", {})
+        ce_gr = greeks_map.get(ce_key) or greeks_map.get(ce_key.replace(":", "|")) or ce_contract.get("option_greeks", {})
+        pe_gr = greeks_map.get(pe_key) or greeks_map.get(pe_key.replace(":", "|")) or pe_contract.get("option_greeks", {})
+
+        ce_ltp = float(ce_q.get("last_price", 0) or ce_q.get("ltp", 0) or 0)
+        pe_ltp = float(pe_q.get("last_price", 0) or pe_q.get("ltp", 0) or 0)
+        ce_oi = int(ce_q.get("oi", 0) or ce_contract.get("oi", 0) or 0)
+        pe_oi = int(pe_q.get("oi", 0) or pe_contract.get("oi", 0) or 0)
+        total_ce_oi += ce_oi
+        total_pe_oi += pe_oi
+
+        ce_bid = float(ce_q.get("bid_price", 0) or 0) or (round(ce_ltp * 0.995, 2) if ce_ltp > 0 else 0)
+        ce_ask = float(ce_q.get("ask_price", 0) or 0) or (round(ce_ltp * 1.005, 2) if ce_ltp > 0 else 0)
+        pe_bid = float(pe_q.get("bid_price", 0) or 0) or (round(pe_ltp * 0.995, 2) if pe_ltp > 0 else 0)
+        pe_ask = float(pe_q.get("ask_price", 0) or 0) or (round(pe_ltp * 1.005, 2) if pe_ltp > 0 else 0)
+
+        ce_side = _build_option_side(ce_ltp, ce_bid, ce_ask, ce_oi, ce_q, ce_gr, 0.5)
+        pe_side = _build_option_side(pe_ltp, pe_bid, pe_ask, pe_oi, pe_q, pe_gr, -0.5)
+        ce_side["instrument_key"] = ce_key
+        pe_side["instrument_key"] = pe_key
+
+        chain.append({"strike": strike, "is_atm": strike == atm, "CE": ce_side, "PE": pe_side})
+
+    pcr = round(total_pe_oi / total_ce_oi, 2) if total_ce_oi > 0 else 1.0
+    max_pain = _calc_max_pain(chain)
+
+    return {
+        "symbol": symbol, "spot": round(spot, 2), "atm_strike": atm,
+        "expiry": target_expiry, "dte": dte, "lot_size": lot_size,
+        "max_pain": max_pain, "total_ce_oi": total_ce_oi, "total_pe_oi": total_pe_oi,
+        "pcr": pcr, "chain": chain,
+    }
+
+
 def get_option_chain(symbol: str, expiry_date: str,
                      num_strikes: int = 10) -> dict | None:
     """Full option chain — spot, ATM, max pain, PCR, per-strike greeks."""
+    if symbol.upper() in ("CRUDEOIL", "CRUDE"):
+        step = STRIKE_STEP.get(symbol, 500)
+        return get_mcx_option_chain(symbol, expiry_date=expiry_date, step=step)
+
     key = INSTRUMENT_KEYS.get(symbol)
     if not key:
         return None
     data = _get(f"{_BASE}/option/chain",
                 {"instrument_key": key, "expiry_date": expiry_date}, timeout=10)
     if not data:
+        if symbol.upper() in ("CRUDEOIL", "CRUDE") or "MCX" in key:
+            step = STRIKE_STEP.get(symbol, 500)
+            return get_mcx_option_chain(symbol, expiry_date=expiry_date, step=step)
         return None
     raw = data if isinstance(data, list) else []
     if not raw:

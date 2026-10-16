@@ -53,6 +53,15 @@ if not chain_df.empty:
         print(near_atm[cols].to_string(index=False))
     else:
         print(chain_df.head(10).to_string(index=False))
+
+    crude = chain_df[chain_df[sym_col] == "CRUDEOIL"]
+    if not crude.empty:
+        print(f"\nSample (CRUDEOIL MCX step=500 contracts):")
+        cols = [c for c in [
+            "Timestamp", "Symbol", "Expiry_Date", "Strike_Price", "Option_Type",
+            "Open", "High", "Low", "Close", "Volume", "Open_Interest", "Bid_Price", "Ask_Price"
+        ] if c in crude.columns]
+        print(crude[cols].head(10).to_string(index=False))
 else:
     print("No chain data collected")
 

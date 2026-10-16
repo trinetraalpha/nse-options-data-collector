@@ -133,5 +133,43 @@ class TestOptionsDataCollector(unittest.TestCase):
             self.assertIn(col, read_df.columns)
 
 
+    def test_crude_sample_csv_columns_and_step(self):
+        csv_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "examples", "sample_data", "crude_option_chain_sample.csv"
+        )
+        self.assertTrue(os.path.isfile(csv_path), "Crude sample CSV file must exist")
+        df = pd.read_csv(csv_path)
+
+        for col in self.expected_columns:
+            self.assertIn(col, df.columns, f"Missing required column in crude sample: {col}")
+
+        # Check symbol and option types
+        self.assertEqual(set(df["Symbol"].unique()), {"CRUDEOIL"})
+        self.assertTrue(set(df["Option_Type"].unique()).issubset({"CE", "PE"}))
+        self.assertGreater(len(df), 0)
+
+        # Check strike step is strictly 500
+        for strike in df["Strike_Price"]:
+            self.assertEqual(
+                strike % 500, 0,
+                f"Strike {strike} is not a multiple of 500"
+            )
+
+    def test_crude_configuration_and_functions(self):
+        import config
+        from utils.upstox_data import get_mcx_option_chain, STRIKE_STEP
+        from collectors.oi_collector import collect_crude_snapshot
+
+        self.assertIn("CRUDEOIL", config.COMMODITIES)
+        self.assertEqual(config.STRIKE_STEP.get("CRUDEOIL"), 500)
+        self.assertEqual(config.STRIKE_STEP.get("CRUDE"), 500)
+        self.assertEqual(STRIKE_STEP.get("CRUDEOIL"), 500)
+        self.assertEqual(config.EXCHANGE_MAP.get("CRUDEOIL"), "MCX")
+        self.assertEqual(config.INSTRUMENT_KEYS.get("CRUDEOIL"), "MCX_FO|CRUDEOIL")
+        self.assertTrue(callable(get_mcx_option_chain))
+        self.assertTrue(callable(collect_crude_snapshot))
+
+
 if __name__ == "__main__":
     unittest.main()

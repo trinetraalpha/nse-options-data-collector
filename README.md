@@ -118,7 +118,23 @@ Check `examples/sample_data/` for real CSV snapshots so you can see exactly what
 |------|-------------|
 | `oi_snapshot_sample.csv` | 5-symbol OI snapshot (BANKNIFTY, RELIANCE, TCS, HDFCBANK, INFY) |
 | `option_chain_sample.csv` | NIFTY ATM ±2 strikes with full Greeks (delta, theta, gamma, vega, IV) |
+| `crude_option_chain_sample.csv` | MCX CRUDEOIL option chain with `step=500` (5000 to 7000 strikes) |
 | `global_cues_sample.csv` | Pre-market (S&P, NASDAQ, crude, gold, USDINR) + Asian session (Hang Seng, Nikkei) |
+
+## MCX Crude Oil (Commodity Options)
+
+CRUDEOIL options on MCX are supported with strike step 500 (`step=500`):
+- **Symbol**: `CRUDEOIL`
+- **Exchange**: `MCX`
+- **Strike Step**: `500` (e.g., 5000, 5500, 6000, 6500, 7000, ...)
+- **Lot Size**: `100` barrels (Standard CRUDEOIL)
+- **Data Collected**: `Timestamp`, `Symbol`, `Open`, `High`, `Low`, `Close`, `Volume`, `Open_Interest`, `Expiry_Date`, `Strike_Price`, `Option_Type`, `Bid_Price`, `Ask_Price` (plus Spot_Price & Greeks).
+- **Run directly**:
+  ```bash
+  python -m collectors.oi_collector --crude
+  # or custom step
+  python -m collectors.oi_collector --crude --step 500
+  ```
 
 ## Adding Your Own Symbols
 
